@@ -9,7 +9,7 @@ from django.core.serializers.xml_serializer import Serializer as _XmlSerializer
 from django.db import models
 from django.db.models.base import ModelBase
 from django.db.models.fields import Field
-from django.db.models.query_utils import DeferredAttribute, deferred_class_factory
+from django.db.models.query_utils import DeferredAttribute
 from django.utils.encoding import smart_text
 from django.utils.six import with_metaclass
 
@@ -179,7 +179,11 @@ class TypedModelMetaclass(ModelBase):
                 manager = cls._default_manager
             if manager is not None:
                 cls.add_to_class('objects', manager)
-                cls._default_manager = cls.objects
+                if hasattr(cls._meta, 'default_manager'):
+                    # Django >= 1.10
+                    cls._meta.default_manager = cls.objects
+                else:
+                    cls._default_manager = cls.objects
 
             # add a get_type_classes classmethod to allow fetching of all the subclasses (useful for admin)
 
@@ -297,13 +301,18 @@ class TypedModelMetaclass(ModelBase):
             del cls._meta.__dict__['fields']
 
 
-def get_deferred_class_for_instance(instance, desired_class):
-    """
-    Returns a deferred class (as used by instances in a .defer() queryset).
-    """
-    original_cls = instance.__class__
-    attrs = [k for (k, v) in original_cls.__dict__.items() if isinstance(v, DeferredAttribute)]
-    return deferred_class_factory(desired_class, attrs)
+if django.VERSION < (1, 10):
+    from django.db.models.query_utils import DeferredAttribute, deferred_class_factory
+    # Deferred attribute loading was changed in django 1.10.
+    # See https://github.com/django/django/pull/6491/ for more.
+
+    def get_deferred_class_for_instance(instance, desired_class):
+        """
+        Returns a deferred class (as used by instances in a .defer() queryset).
+        """
+        original_cls = instance.__class__
+        attrs = [k for (k, v) in original_cls.__dict__.items() if isinstance(v, DeferredAttribute)]
+        return deferred_class_factory(desired_class, attrs)
 
 
 class TypedModel(with_metaclass(TypedModelMetaclass, models.Model)):
@@ -407,7 +416,7 @@ class TypedModel(with_metaclass(TypedModelMetaclass, models.Model)):
         current_cls = self.__class__
 
         if current_cls != correct_cls:
-            if self._deferred:
+            if django.VERSION < (1, 10) and self._deferred:
                 # create a new deferred class based on correct_cls instead of current_cls
                 correct_cls = get_deferred_class_for_instance(self, correct_cls)
             self.__class__ = correct_cls
